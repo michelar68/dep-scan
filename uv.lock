@@ -1100,7 +1100,7 @@ wheels = [
 
 [[package]]
 name = "owasp-depscan"
-version = "6.0.0a3"
+version = "6.0.0b3"
 source = { editable = "." }
 dependencies = [
     { name = "appthreat-vulnerability-db", extra = ["oras"] },
