@@ -17,6 +17,7 @@ from reporting_lib.template import (
 )
 
 NEWLINE = "\n"
+SEPARATOR = "✦"
 
 
 class ReportGenerator:
@@ -40,7 +41,9 @@ class ReportGenerator:
         "Score",
     ]
     DEPENDENCY_SCAN_RESULTS_BOM_DATA = DEPENDENCY_SCAN_RESULTS_BOM + " " + DATA
-    DEPENDENCY_SCAN_RESULTS_BOM_RECOMMENDATION = DEPENDENCY_SCAN_RESULTS_BOM + " " + RECOMMENDATION
+    DEPENDENCY_SCAN_RESULTS_BOM_RECOMMENDATION = (
+        DEPENDENCY_SCAN_RESULTS_BOM + " " + RECOMMENDATION
+    )
     DEPENDENCY_SCAN_RESULTS_BOM_ACTION_REQUIRED = (
         DEPENDENCY_SCAN_RESULTS_BOM + " " + ACTION_REQUIRED
     )
@@ -151,13 +154,8 @@ class ReportGenerator:
                 styles = styles.split("body {", 1)[0]
 
             depscan_report = data.split("<body>", 1)[1].split("</body>", 1)[0]
-            if depscan_report.strip().startswith(
-                """<pre style="font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><code style="font-family:inherit">"""
-            ):
-                depscan_report = depscan_report.split(
-                    """<pre style="font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><code style="font-family:inherit">""",
-                    1,
-                )[1]
+            if depscan_report.strip().startswith("""<pre style="font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><code style="font-family:inherit">"""):
+                depscan_report = depscan_report.split("""<pre style="font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><code style="font-family:inherit">""", 1)[1]
             if depscan_report.strip().endswith("</code></pre>"):
                 depscan_report = depscan_report.rsplit("</code></pre>", 1)[0]
 
@@ -177,9 +175,7 @@ class ReportGenerator:
         if match:
             return True
         else:  # try with additional empty spans around the one with the string, it may happen
-            pattern = (
-                rf'<span class="r\d\d?">[ \t]*<\/span>{pattern}<span class="r\d\d?">[ \t]*<\/span>'
-            )
+            pattern = rf'<span class="r\d\d?">[ \t]*<\/span>{pattern}<span class="r\d\d?">[ \t]*<\/span>'
             match = re.fullmatch(pattern, text)
             if match:
                 return True
@@ -198,10 +194,53 @@ class ReportGenerator:
             return False
 
         for idx in range(0, len(text_array)):
-            if not self.string_matches_span_pattern(text_array[idx], pattern_content_array[idx]):
+            if not self.string_matches_span_pattern(
+                text_array[idx], pattern_content_array[idx]
+            ):
                 return False
 
         return True
+
+    def separate_report_by_language_explanations(self, depscan_report):
+        pieces = {}
+
+        current_piece = None
+
+        marker_01 = None # ┏ ━ ┓
+        marker_02 = None # ┃ <span class="rY">Explanations for XXX</span> ┃
+        marker_03 = None # ┗ ━ ┛
+
+        for current_line in depscan_report.splitlines():
+            line = current_line.strip()
+
+            if self.string_matches_regex(line, r"""┏━+┓"""):
+                marker_01 = line
+                marker_02 = None
+                marker_03 = None
+            elif marker_01 is not None and self.string_matches_regex(line, r"""┃\s+<span class=\"r\d\d?\d?">Explanations for [^<]*?<\/span>\s+┃"""):
+                marker_02 = line
+                marker_03 = None
+            elif marker_01 is not None and marker_02 is not None and self.string_matches_regex(line, r"""┗━+┛"""):
+                marker_03 = line
+            else:
+                marker_01 = None
+                marker_02 = None
+                marker_03 = None
+
+            if marker_01 is not None and marker_02 is not None and marker_03 is not None:
+                pieces[current_piece] = pieces[current_piece][:-2]
+                current_piece = marker_02.split("Explanations for", 1)[1].split("<", 1)[0].strip()
+                continue
+
+            if current_piece not in pieces:
+                pieces[current_piece] = []
+
+            pieces[current_piece].append(current_line)
+
+        for key in pieces.keys():
+            pieces[key] = "\n".join(pieces[key])
+
+        return pieces
 
     def parse_depscan_report(self, depscan_report):
         last_seen_reachable_flows = None
@@ -269,9 +308,7 @@ class ReportGenerator:
                 current_location = self.SECURE_DESIGN_TIPS
                 continue
 
-            if previous_line == "" and self.string_matches_regex(
-                line, r"""<span class="r\d\d?\d?"> • <\/span>[^<]*"""
-            ):
+            if previous_line == "" and self.string_matches_regex(line, r"""<span class="r\d\d?\d?"> • <\/span>[^<]*"""):
                 current_location = self.SECURE_DESIGN_TIPS
 
             # ---- Data population: Secure Design Tips ----
@@ -284,16 +321,7 @@ class ReportGenerator:
 
             # ---- Location identification: INFO ----
 
-            if current_location is None and (
-                self.string_matches_regex(
-                    line,
-                    r'<span class="r\d\d?\d?">\s*<\/span><span class="r\d\d?\d?">INFO\s*<\/span>.*<\/span>\!\s*',
-                )
-                or self.string_matches_regex(
-                    line,
-                    r'<span class="r\d\d?\d?">\s*<\/span><span class="r\d\d?\d?">INFO\s*<\/span> No vulnerabilities found!',
-                )
-            ):
+            if current_location is None and (self.string_matches_regex(line, r'<span class="r\d\d?\d?">\s*<\/span><span class="r\d\d?\d?">INFO\s*<\/span>.*<\/span>\!\s*') or self.string_matches_regex(line, r'<span class="r\d\d?\d?">\s*<\/span><span class="r\d\d?\d?">INFO\s*<\/span> No vulnerabilities found!')):
                 current_location = self.INFO
 
             if current_location == self.INFO and line == "":
@@ -342,14 +370,20 @@ class ReportGenerator:
 
             # ---- Location identification: Vulnerability Disclosure Report ----
 
-            if line == self.VULNERABILITY_DISCLOSURE_REPORT or self.string_matches_span_pattern(
-                line, self.VULNERABILITY_DISCLOSURE_REPORT
+            if (
+                line == self.VULNERABILITY_DISCLOSURE_REPORT
+                or self.string_matches_span_pattern(
+                    line, self.VULNERABILITY_DISCLOSURE_REPORT
+                )
             ):
                 current_location = self.DEPENDENCY_SCAN_RESULTS_BOM_SUMMARY
                 continue
 
-            if line == self.DEPENDENCY_SCAN_RESULTS_BOM or self.string_matches_span_pattern(
-                line, self.DEPENDENCY_SCAN_RESULTS_BOM
+            if (
+                line == self.DEPENDENCY_SCAN_RESULTS_BOM
+                or self.string_matches_span_pattern(
+                    line, self.DEPENDENCY_SCAN_RESULTS_BOM
+                )
             ):
                 current_location = self.DEPENDENCY_SCAN_RESULTS_BOM
                 continue
@@ -442,7 +476,8 @@ class ReportGenerator:
 
                     stripped_columns = [column.strip() for column in columns]
                     if (
-                        stripped_columns == self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS
+                        stripped_columns
+                        == self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS
                         or self.array_matches_span_pattern(
                             stripped_columns,
                             self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS,
@@ -489,13 +524,18 @@ class ReportGenerator:
                 and line.startswith("│")
                 and line.endswith("│")
             ):
-                if sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.RECOMMENDATION] != "":
+                if (
+                    sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
+                        self.RECOMMENDATION
+                    ]
+                    != ""
+                ):
                     sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
                         self.RECOMMENDATION
                     ] += "\n"
-                sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.RECOMMENDATION] += line[
-                    1:-1
-                ]
+                sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
+                    self.RECOMMENDATION
+                ] += line[1:-1]
                 continue
 
             if (
@@ -503,13 +543,18 @@ class ReportGenerator:
                 and line.startswith("│")
                 and line.endswith("│")
             ):
-                if sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.ACTION_REQUIRED] != "":
+                if (
+                    sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
+                        self.ACTION_REQUIRED
+                    ]
+                    != ""
+                ):
                     sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
                         self.ACTION_REQUIRED
                     ] += "\n"
-                sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.ACTION_REQUIRED] += line[
-                    1:-1
-                ]
+                sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
+                    self.ACTION_REQUIRED
+                ] += line[1:-1]
                 continue
 
             # ---- Location identification: Proactive Measures ----
@@ -561,9 +606,7 @@ class ReportGenerator:
                 for row_piece in current_table_row:
                     for index, row_piece_column in enumerate(row_piece):
                         cells[index] += row_piece_column + "\n"
-                for index, cell in enumerate(
-                    cells
-                ):  # dirty fix to eliminate the useless \n added at the end of each cell
+                for index, cell in enumerate(cells): # dirty fix to eliminate the useless \n added at the end of each cell
                     cells[index] = cell[:-1]
 
                 sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][
@@ -600,9 +643,9 @@ class ReportGenerator:
                             stripped_columns, self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS
                         )
                     ):
-                        sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][
-                            self.TABLE_HEADERS
-                        ] = stripped_columns
+                        sections_tree[self.PROACTIVE_MEASURES][
+                            self.TOP_REACHABLE_PACKAGES
+                        ][self.TABLE_HEADERS] = stripped_columns
                         current_table_row = []
                         continue
                     else:
@@ -617,9 +660,7 @@ class ReportGenerator:
                     for row_piece in current_table_row:
                         for index, row_piece_column in enumerate(row_piece):
                             cells[index] += row_piece_column + "\n"
-                    for index, cell in enumerate(
-                        cells
-                    ):  # dirty fix to eliminate the useless \n added at the end of each cell
+                    for index, cell in enumerate(cells): # dirty fix to eliminate the useless \n added at the end of each cell
                         cells[index] = cell[:-1]
 
                     sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][
@@ -648,15 +689,14 @@ class ReportGenerator:
                 continue
 
             if (
-                current_location
-                in [self.REACHABLE_FLOWS_REACHABLE_PACKAGES, self.REACHABLE_FLOWS_DATA]
+                current_location in [self.REACHABLE_FLOWS_REACHABLE_PACKAGES, self.REACHABLE_FLOWS_DATA, self.REACHABLE_FLOWS_RECOMMENDATION]
                 and line == ""
             ):
                 cells = [
                     summary_column,
                     reachable_flow_column,
                     reachable_packages_column,
-                    recommendation_column,
+                    recommendation_column
                 ]
                 sections_tree[self.REACHABLE_FLOWS][self.DATA].append(cells)
                 summary_column = ""
@@ -667,28 +707,11 @@ class ReportGenerator:
                 last_seen_reachable_flows = self.REACHABLE_FLOWS
                 continue
 
-            if (
-                current_location == self.REACHABLE_FLOWS_DATA
-                and line != "Reachable Packages:"
-                and not self.string_matches_span_pattern(line, r"Reachable Packages:")
-                and not line.strip().startswith("╚")
-                and not line.strip().endswith("╝")
-                and not line.strip().startswith("╔")
-                and not line.strip().endswith("╗")
-                and not line.strip().startswith("║")
-                and not line.strip().endswith("║")
-                and not line.strip().startswith("#")
-                and not self.string_matches_regex(
-                    line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'
-                )
-            ):
+            if current_location == self.REACHABLE_FLOWS_DATA and line != "Reachable Packages:" and not self.string_matches_span_pattern(line, r"Reachable Packages:") and not line.strip().startswith("╚") and not line.strip().endswith("╝") and not line.strip().startswith("╔") and not line.strip().endswith("╗") and not line.strip().startswith("║") and not line.strip().endswith("║") and not line.strip().startswith("#") and not self.string_matches_regex(line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'):
                 current_location = self.REACHABLE_FLOWS_RECOMMENDATION
                 last_seen_reachable_flows = self.REACHABLE_FLOWS
 
-            if current_location in [
-                self.REACHABLE_FLOWS_DATA,
-                self.REACHABLE_FLOWS_RECOMMENDATION,
-            ] and (
+            if current_location in [self.REACHABLE_FLOWS_DATA, self.REACHABLE_FLOWS_RECOMMENDATION] and (
                 line == "Reachable Packages:"
                 or self.string_matches_span_pattern(line, r"Reachable Packages:")
             ):
@@ -696,22 +719,12 @@ class ReportGenerator:
                 last_seen_reachable_flows = self.REACHABLE_FLOWS
                 continue
 
-            if (
-                current_location != self.REACHABLE_FLOWS_DATA
-                and last_seen_reachable_flows == self.REACHABLE_FLOWS
-            ):
-                if line.startswith("#") or self.string_matches_regex(
-                    line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'
-                ):
+            if current_location != self.REACHABLE_FLOWS_DATA and last_seen_reachable_flows  in [self.REACHABLE_FLOWS, None]:
+                if line.startswith("#") or self.string_matches_regex(line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'):
                     current_location = self.REACHABLE_FLOWS_DATA
 
-            if (
-                current_location != self.NON_REACHABLE_FLOWS_DATA
-                and last_seen_reachable_flows == self.NON_REACHABLE_FLOWS
-            ):
-                if line.startswith("#") or self.string_matches_regex(
-                    line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'
-                ):
+            if current_location != self.NON_REACHABLE_FLOWS_DATA and last_seen_reachable_flows == self.NON_REACHABLE_FLOWS:
+                if line.startswith("#") or self.string_matches_regex(line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'):
                     current_location = self.NON_REACHABLE_FLOWS_DATA
 
             # ---- Data population: Reachable Flows ----
@@ -760,21 +773,7 @@ class ReportGenerator:
 
             # ---- Location identification: Non-Reachable Flows ----
 
-            if (
-                current_location == self.NON_REACHABLE_FLOWS_DATA
-                and line != "Reachable Packages:"
-                and not self.string_matches_span_pattern(line, r"Reachable Packages:")
-                and not line.strip().startswith("╚")
-                and not line.strip().endswith("╝")
-                and not line.strip().startswith("╔")
-                and not line.strip().endswith("╗")
-                and not line.strip().startswith("║")
-                and not line.strip().endswith("║")
-                and not line.strip().startswith("#")
-                and not self.string_matches_regex(
-                    line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'
-                )
-            ):
+            if current_location == self.NON_REACHABLE_FLOWS_DATA and line != "Reachable Packages:" and not self.string_matches_span_pattern(line, r"Reachable Packages:") and not line.strip().startswith("╚") and not line.strip().endswith("╝") and not line.strip().startswith("╔") and not line.strip().endswith("╗") and not line.strip().startswith("║") and not line.strip().endswith("║") and not line.strip().startswith("#") and not self.string_matches_regex(line, r'<span class="r\d+">#\d+<\/span><span class="r\d+">.*<\/span>'):
                 current_location = self.NON_REACHABLE_FLOWS_RECOMMENDATION
                 last_seen_reachable_flows = self.NON_REACHABLE_FLOWS
 
@@ -795,15 +794,14 @@ class ReportGenerator:
                 continue
 
             if (
-                current_location
-                in [self.NON_REACHABLE_FLOWS_REACHABLE_PACKAGES, self.NON_REACHABLE_FLOWS_DATA]
+                current_location in [self.NON_REACHABLE_FLOWS_REACHABLE_PACKAGES, self.NON_REACHABLE_FLOWS_DATA, self.NON_REACHABLE_FLOWS_RECOMMENDATION]
                 and line == ""
             ):
                 cells = [
                     summary_column,
                     reachable_flow_column,
                     reachable_packages_column,
-                    recommendation_column,
+                    recommendation_column
                 ]
                 sections_tree[self.NON_REACHABLE_FLOWS][self.DATA].append(cells)
                 summary_column = ""
@@ -813,12 +811,8 @@ class ReportGenerator:
                 current_location = self.NON_REACHABLE_FLOWS_DATA
                 continue
 
-            if current_location in [
-                self.NON_REACHABLE_FLOWS_DATA,
-                self.NON_REACHABLE_FLOWS_RECOMMENDATION,
-            ] and (
-                line == "Reachable Packages:"
-                or self.string_matches_span_pattern(line, r"Reachable Packages:")
+            if current_location in [self.NON_REACHABLE_FLOWS_DATA, self.NON_REACHABLE_FLOWS_RECOMMENDATION] and (
+                line == "Reachable Packages:" or self.string_matches_span_pattern(line, r"Reachable Packages:")
             ):
                 current_location = self.NON_REACHABLE_FLOWS_REACHABLE_PACKAGES
                 last_seen_reachable_flows = self.NON_REACHABLE_FLOWS
@@ -900,11 +894,17 @@ class ReportGenerator:
                 current_location = self.ENDPOINTS_SUMMARY
                 continue
 
-            if line == self.ENDPOINTS or self.string_matches_span_pattern(line, self.ENDPOINTS):
+            if line == self.ENDPOINTS or self.string_matches_span_pattern(
+                line, self.ENDPOINTS
+            ):
                 current_location = self.ENDPOINTS
                 continue
 
-            if current_location == self.ENDPOINTS and line.startswith("╔") and line.endswith("╗"):
+            if (
+                current_location == self.ENDPOINTS
+                and line.startswith("╔")
+                and line.endswith("╗")
+            ):
                 current_location = self.ENDPOINTS_DATA
                 current_columns_count = len(line[1:-1].split("╤"))
                 continue
@@ -924,7 +924,9 @@ class ReportGenerator:
                     for index, row_piece_column in enumerate(row_piece):
                         cells[index] += row_piece_column + "\n"
 
-                sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.DATA].append(cells)
+                sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.DATA].append(
+                    cells
+                )
                 current_table_row = []
 
                 continue
@@ -932,9 +934,16 @@ class ReportGenerator:
             # ---- Data population: Service Endpoints ----
 
             if current_location == self.ENDPOINTS_SUMMARY:
-                if sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY] != "":
-                    sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY] += "\n"
-                sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY] += line
+                if (
+                    sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY]
+                    != ""
+                ):
+                    sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][
+                        self.SUMMARY
+                    ] += "\n"
+                sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY] += (
+                    line
+                )
                 continue
 
             if current_location == self.ENDPOINTS_DATA:
@@ -966,7 +975,9 @@ class ReportGenerator:
                         for index, row_piece_column in enumerate(row_piece):
                             cells[index] += row_piece_column + "\n"
 
-                    sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.DATA].append(cells)
+                    sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][
+                        self.DATA
+                    ].append(cells)
                     current_table_row = []
 
                 continue
@@ -977,14 +988,17 @@ class ReportGenerator:
             ):
                 sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][
                     self.IDENTIFIED_ENDPOINTS
-                ] = (line.split("Identified Endpoints:", 1)[1].split("<", 1)[0].strip())
+                ] = line.split("Identified Endpoints:", 1)[1].split("<", 1)[0].strip()
                 current_location = None
                 continue
 
             # ---- Location identification: Prioritized Vulnerabilities ----
 
-            if line == self.PRIORITIZED_VULNERABILITIES or self.string_matches_span_pattern(
-                line, self.PRIORITIZED_VULNERABILITIES
+            if (
+                line == self.PRIORITIZED_VULNERABILITIES
+                or self.string_matches_span_pattern(
+                    line, self.PRIORITIZED_VULNERABILITIES
+                )
             ):
                 current_location = self.TOP_PRIORITY_BOM_SUMMARY
                 continue
@@ -1027,9 +1041,7 @@ class ReportGenerator:
                 for row_piece in current_table_row:
                     for index, row_piece_column in enumerate(row_piece):
                         cells[index] += row_piece_column + "\n"
-                for index, cell in enumerate(
-                    cells
-                ):  # dirty fix to eliminate the useless \n added at the end of each cell
+                for index, cell in enumerate(cells): # dirty fix to eliminate the useless \n added at the end of each cell
                     cells[index] = cell[:-1]
 
                 sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
@@ -1042,14 +1054,14 @@ class ReportGenerator:
 
             if current_location == self.TOP_PRIORITY_BOM_SUMMARY:
                 if (
-                    sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-                        self.SUMMARY
-                    ]
+                    sections_tree[self.PRIORITIZED_VULNERABILITIES][
+                        self.TOP_PRIORITY_BOM
+                    ][self.SUMMARY]
                     != ""
                 ):
-                    sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-                        self.SUMMARY
-                    ] += "\n"
+                    sections_tree[self.PRIORITIZED_VULNERABILITIES][
+                        self.TOP_PRIORITY_BOM
+                    ][self.SUMMARY] += "\n"
                 sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
                     self.SUMMARY
                 ] += line
@@ -1066,9 +1078,9 @@ class ReportGenerator:
                             stripped_columns, self.TOP_PRIORITY_BOM_DATA_COLUMNS
                         )
                     ):
-                        sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-                            self.TABLE_HEADERS
-                        ] = stripped_columns
+                        sections_tree[self.PRIORITIZED_VULNERABILITIES][
+                            self.TOP_PRIORITY_BOM
+                        ][self.TABLE_HEADERS] = stripped_columns
                         current_table_row = []
                         continue
                     else:
@@ -1083,14 +1095,12 @@ class ReportGenerator:
                     for row_piece in current_table_row:
                         for index, row_piece_column in enumerate(row_piece):
                             cells[index] += row_piece_column + "\n"
-                    for index, cell in enumerate(
-                        cells
-                    ):  # dirty fix to eliminate the useless \n added at the end of each cell
+                    for index, cell in enumerate(cells): # dirty fix to eliminate the useless \n added at the end of each cell
                         cells[index] = cell[:-1]
 
-                    sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-                        self.DATA
-                    ].append(cells)
+                    sections_tree[self.PRIORITIZED_VULNERABILITIES][
+                        self.TOP_PRIORITY_BOM
+                    ][self.DATA].append(cells)
                     current_table_row = []
 
                 continue
@@ -1124,13 +1134,35 @@ class ReportGenerator:
 
         return "\n".join(formatted_content)
 
+    def identify_table_id(self, table_inits, prefix):
+        table_init = f'initTable("#{prefix}");'
+        if table_init not in table_inits:
+            return prefix
+
+        counter = 0
+        while True:
+            table_id = f"{prefix}-{counter}"
+            table_init = f'initTable("#{table_id}");'
+            if table_init not in table_inits:
+                return table_id
+            else:
+                counter += 1
+
     def generate_section_prioritized_vulnerabilities(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         prioritized_vulnerabilities = PRIORITIZED_VULNERABILITIES
-        current_content = sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-            self.PRIORITIZED_COUNT
-        ]
+
+        if piece_id is None:
+            prioritized_vulnerabilities = prioritized_vulnerabilities.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            prioritized_vulnerabilities = prioritized_vulnerabilities.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
+
+        current_content = sections_tree[self.PRIORITIZED_VULNERABILITIES][
+            self.TOP_PRIORITY_BOM
+        ][self.PRIORITIZED_COUNT]
         if tree_is_from_html is False:
             current_content = html.escape(current_content)
 
@@ -1141,15 +1173,10 @@ class ReportGenerator:
             pass
         if prioritized_count == -1:
             all_cves = set()
-            for row_data in sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-                self.DATA
-            ]:
-                current_data = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")]
-                    if len(row_data)
-                    >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs") + 1
-                    else "-"
-                )
+            for row_data in sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][self.DATA]:
+                current_data = row_data[
+                                self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")
+                            ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")+1 else "-"
                 if current_data == "-":
                     continue
                 for data_element in current_data.strip().splitlines():
@@ -1160,9 +1187,9 @@ class ReportGenerator:
             "<PRIORITIZED_COUNT_PLACEHOLDER>", current_content, 1
         )
 
-        current_content = sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-            self.SUMMARY
-        ]
+        current_content = sections_tree[self.PRIORITIZED_VULNERABILITIES][
+            self.TOP_PRIORITY_BOM
+        ][self.SUMMARY]
         if tree_is_from_html is False:
             current_content = html.escape(current_content)
         prioritized_vulnerabilities = prioritized_vulnerabilities.replace(
@@ -1170,45 +1197,36 @@ class ReportGenerator:
         )
 
         html_table = []
-        for row_data in sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
-            self.DATA
-        ]:
+        for row_data in sections_tree[self.PRIORITIZED_VULNERABILITIES][
+            self.TOP_PRIORITY_BOM
+        ][self.DATA]:
             if self.raw_content:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package")]
-                    if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")]
-                    if len(row_data)
-                    >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version")]
-                    if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps")]
-                    if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
@@ -1219,42 +1237,35 @@ class ReportGenerator:
             else:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package")]
-                    if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Package")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content}</td>")
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")]
-                    if len(row_data)
-                    >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Prioritized CVEs")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 cves = []
                 for content_element in current_content.strip().splitlines():
-                    cves.append(f'<span class="badge bg-secondary">{content_element}</span>')
+                    cves.append(
+                        f'<span class="badge bg-secondary">{content_element}</span>'
+                    )
                 html_row.append(f"<td>{'<br>'.join(cves)}</td>")
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version")]
-                    if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Fix Version")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content}</td>")
 
-                current_content = (
-                    row_data[self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps")]
-                    if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps")
+                ] if len(row_data) >= self.TOP_PRIORITY_BOM_DATA_COLUMNS.index("Next Steps")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content.replace(NEWLINE, '<br>')}</td>")
@@ -1267,13 +1278,23 @@ class ReportGenerator:
             "<TABLE_PLACEHOLDER>", "\n".join(html_table), 1
         )
 
+        table_id = self.identify_table_id(table_inits, "prioritized-vulnerabilities-table")
+        table_inits.append(f'initTable("#{table_id}");')
+        prioritized_vulnerabilities = prioritized_vulnerabilities.replace("<TABLE_ID_PLACEHOLDER>", table_id, 1)
+
         report_content.append(prioritized_vulnerabilities)
-        table_inits.append('initTable("#prioritized-vulnerabilities-table");')
 
     def generate_section_vulnerability_disclosure_report(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         vulnerability_disclosure_report = VDR
+
+        if piece_id is None:
+            vulnerability_disclosure_report = vulnerability_disclosure_report.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            vulnerability_disclosure_report = vulnerability_disclosure_report.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
             self.DEPENDENCY_SCAN_RESULTS_BOM
@@ -1288,17 +1309,11 @@ class ReportGenerator:
             pass
         if vulnerabilities_count == -1:
             all_cves = set()
-            for row_data in sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
-                self.DEPENDENCY_SCAN_RESULTS_BOM
-            ][self.DATA]:
-                current_data = (
-                    row_data[
-                        self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree")
-                    ]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree") + 1
-                    else "-"
-                )
+            for row_data in sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.DEPENDENCY_SCAN_RESULTS_BOM][self.DATA]:
+                current_data = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index(
+                        "Dependency Tree"
+                    )] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree")+1 else "-"
                 if current_data == "-":
                     continue
                 for data_element in current_data.strip().splitlines():
@@ -1322,7 +1337,10 @@ class ReportGenerator:
             "<SUMMARY_PLACEHOLDER>", current_content, 1
         )
 
-        if sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.RECOMMENDATION] != "":
+        if (
+            sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.RECOMMENDATION]
+            != ""
+        ):
             current_content = sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
                 self.RECOMMENDATION
             ]
@@ -1344,7 +1362,10 @@ class ReportGenerator:
                 "<RECOMMENDATION_PLACEHOLDER>", "", 1
             )
 
-        if sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.ACTION_REQUIRED] != "":
+        if (
+            sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.ACTION_REQUIRED]
+            != ""
+        ):
             current_content = sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
                 self.ACTION_REQUIRED
             ]
@@ -1373,54 +1394,39 @@ class ReportGenerator:
             if self.raw_content:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[
-                        self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree")
-                    ]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index(
+                        "Dependency Tree"
+                    )
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
@@ -1431,54 +1437,39 @@ class ReportGenerator:
             else:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[
-                        self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree")
-                    ]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index(
+                        "Dependency Tree"
+                    )
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Dependency Tree")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Insights")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Fix Version")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Severity")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score")]
-                    if len(row_data)
-                    >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score")
+                ] if len(row_data) >= self.DEPENDENCY_SCAN_RESULTS_BOM_DATA_COLUMNS.index("Score")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
@@ -1491,17 +1482,27 @@ class ReportGenerator:
             "<TABLE_PLACEHOLDER>", "\n".join(html_table), 1
         )
 
+        table_id = self.identify_table_id(table_inits, "vulnerability-disclosure-report-table")
+        table_inits.append(f'initTable("#{table_id}");')
+        vulnerability_disclosure_report = vulnerability_disclosure_report.replace("<TABLE_ID_PLACEHOLDER>", table_id, 1)
+
         report_content.append(vulnerability_disclosure_report)
-        table_inits.append('initTable("#vulnerability-disclosure-report-table");')
 
     def generate_section_proactive_measures(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         proactive_measures = PROACTIVE_MEASURES
 
-        current_content = sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][
-            self.SUMMARY
-        ]
+        if piece_id is None:
+            proactive_measures = proactive_measures.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            proactive_measures = proactive_measures.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
+
+        current_content = sections_tree[self.PROACTIVE_MEASURES][
+            self.TOP_REACHABLE_PACKAGES
+        ][self.SUMMARY]
         if tree_is_from_html is False:
             current_content = html.escape(current_content)
         proactive_measures = proactive_measures.replace(
@@ -1509,28 +1510,22 @@ class ReportGenerator:
         )
 
         html_table = []
-        for row_data in sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][
-            self.DATA
-        ]:
+        for row_data in sections_tree[self.PROACTIVE_MEASURES][
+            self.TOP_REACHABLE_PACKAGES
+        ][self.DATA]:
             if self.raw_content:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package")]
-                    if len(row_data)
-                    >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package")
+                ] if len(row_data) >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows")]
-                    if len(row_data)
-                    >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows")
+                ] if len(row_data) >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
@@ -1542,24 +1537,18 @@ class ReportGenerator:
             else:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package")]
-                    if len(row_data)
-                    >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package")
+                ] if len(row_data) >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Package")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content}</td>")
                 reachable_flows_index = self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index(
                     "Reachable Flows"
                 )
-                current_content = (
-                    row_data[self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows")]
-                    if len(row_data)
-                    >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows")
+                ] if len(row_data) >= self.TOP_REACHABLE_PACKAGES_DATA_COLUMNS.index("Reachable Flows")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 if current_content:
@@ -1573,13 +1562,24 @@ class ReportGenerator:
             "<TABLE_PLACEHOLDER>", "\n".join(html_table), 1
         )
 
+        table_id = self.identify_table_id(table_inits, "proactive-measures-table")
+        table_inits.append(f'initTable("#{table_id}");')
+        proactive_measures = proactive_measures.replace("<TABLE_ID_PLACEHOLDER>", table_id, 1)
+
         report_content.append(proactive_measures)
-        table_inits.append('initTable("#proactive-measures-table");')
+        
 
     def generate_section_service_endpoints(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         service_endpoints = SERVICE_ENDPOINTS
+
+        if piece_id is None:
+            service_endpoints = service_endpoints.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            service_endpoints = service_endpoints.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][
             self.IDENTIFIED_ENDPOINTS
@@ -1593,47 +1593,46 @@ class ReportGenerator:
             identified_endpoints = -1
             pass
         if identified_endpoints == -1:
-            current_content = (
-                f"{len(sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.DATA])}"
-            )
+            current_content = f"{len(sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.DATA])}"
+
 
         service_endpoints = service_endpoints.replace(
             "<IDENTIFIED_ENDPOINTS_PLACEHOLDER>", current_content, 1
         )
 
-        current_content = sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY]
+        current_content = sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][
+            self.SUMMARY
+        ]
         if tree_is_from_html is False:
             current_content = html.escape(current_content)
-        service_endpoints = service_endpoints.replace("<SUMMARY_PLACEHOLDER>", current_content, 1)
+        service_endpoints = service_endpoints.replace(
+            "<SUMMARY_PLACEHOLDER>", current_content, 1
+        )
 
         html_table = []
-        for row_data in sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.DATA]:
+        for row_data in sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][
+            self.DATA
+        ]:
             if self.raw_content:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern")]
-                    if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern")
+                ] if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods")]
-                    if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods")
+                ] if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
 
-                current_content = (
-                    row_data[self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots")]
-                    if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots")
+                ] if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td><pre>{current_content}</pre></td>")
@@ -1644,30 +1643,24 @@ class ReportGenerator:
             else:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern")]
-                    if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern")
+                ] if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("URL Pattern")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content}</td>")
 
-                current_content = (
-                    row_data[self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods")]
-                    if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods")
+                ] if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("HTTP Methods")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 current_content = current_content.replace("\n", "<br>")
                 html_row.append(f"<td>{current_content}</td>")
 
-                current_content = (
-                    row_data[self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots")]
-                    if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots")
+                ] if len(row_data) >= self.ENDPOINTS_DATA_COLUMNS.index("Code Hotspots")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 current_content = current_content.replace("\n", "<br>")
@@ -1681,39 +1674,50 @@ class ReportGenerator:
             "<TABLE_PLACEHOLDER>", "\n".join(html_table), 1
         )
 
+        table_id = self.identify_table_id(table_inits, "service-endpoints-table")
+        table_inits.append(f'initTable("#{table_id}");')
+        service_endpoints = service_endpoints.replace("<TABLE_ID_PLACEHOLDER>", table_id, 1)
+
         report_content.append(service_endpoints)
-        table_inits.append('initTable("#service-endpoints-table");')
 
     def generate_section_reachable_flows(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         reachable_flows = REACHABLE_FLOWS
+
+        if piece_id is None:
+            reachable_flows = reachable_flows.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            reachable_flows = reachable_flows.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.REACHABLE_FLOWS][self.SUMMARY]
         if tree_is_from_html is False:
             current_content = html.escape(current_content)
-        reachable_flows = reachable_flows.replace("<SUMMARY_PLACEHOLDER>", current_content, 1)
+
+        if current_content == "":
+            current_content = "Below are some reachable flows identified by depscan."
+
+        reachable_flows = reachable_flows.replace(
+            "<SUMMARY_PLACEHOLDER>", current_content, 1
+        )
 
         html_table = []
         for row_data in sections_tree[self.REACHABLE_FLOWS][self.DATA]:
             if self.raw_content:
                 html_row = ["<tr>"]
 
-                summary = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")]
-                    if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary") + 1
-                    else "-"
-                )
+                summary = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")
+                ] if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")+1 else "-"
 
                 if tree_is_from_html is False:
                     summary = html.escape(summary)
 
-                recommendation = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation")].strip()
-                    if len(row_data)
-                    >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation") + 1
-                    else ""
-                )
+                recommendation = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation")
+                ].strip() if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation")+1 else ""
 
                 if tree_is_from_html is False:
                     recommendation = html.escape(recommendation)
@@ -1725,27 +1729,30 @@ class ReportGenerator:
 
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
-
-                current_content = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")]
-                    if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows") + 1
-                    else "-"
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
                 )
-                current_content = "\n".join(line.rstrip() for line in current_content.splitlines())
-                if tree_is_from_html is False:
-                    current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
 
-                current_content = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")]
-                    if len(row_data)
-                    >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages") + 1
-                    else "-"
+                current_content = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")
+                ] if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")+1 else "-"
+                current_content = "\n".join(
+                    line.rstrip() for line in current_content.splitlines()
                 )
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
+                )
+
+                current_content = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")
+                ] if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")+1 else "-"
+                if tree_is_from_html is False:
+                    current_content = html.escape(current_content)
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
+                )
 
                 html_row.append("</tr>")
 
@@ -1754,48 +1761,44 @@ class ReportGenerator:
             else:
                 html_row = ["<tr>"]
 
-                summary = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")]
-                    if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary") + 1
-                    else "-"
-                )
+                summary = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")
+                ] if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")+1 else "-"
 
                 if tree_is_from_html is False:
                     summary = html.escape(summary)
 
-                recommendation = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation")].strip()
-                    if len(row_data)
-                    >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation") + 1
-                    else ""
-                )
+                recommendation = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation")
+                ].strip() if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Recommendation")+1 else ""
 
                 if tree_is_from_html is False:
                     recommendation = html.escape(recommendation)
 
                 if recommendation != "":
                     current_content = f"""{summary}<br><br><div class="alert alert-info" role="alert">{recommendation}</div>"""
+                else:
+                    current_content = summary
 
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content}</td>")
 
-                current_content = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")]
-                    if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows") + 1
-                    else "-"
+                current_content = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")
+                ] if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")+1 else "-"
+                current_content = "\n".join(
+                    line.rstrip() for line in current_content.splitlines()
                 )
-                current_content = "\n".join(line.rstrip() for line in current_content.splitlines())
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
-
-                current_content = (
-                    row_data[self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")]
-                    if len(row_data)
-                    >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages") + 1
-                    else "-"
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
                 )
+
+                current_content = row_data[
+                    self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")
+                ] if len(row_data) >= self.REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 formatted_content = self.format_as_html_ul(current_content)
@@ -1805,15 +1808,27 @@ class ReportGenerator:
 
                 html_table.append("\n".join(html_row))
 
-        reachable_flows = reachable_flows.replace("<TABLE_PLACEHOLDER>", "\n".join(html_table), 1)
+        reachable_flows = reachable_flows.replace(
+            "<TABLE_PLACEHOLDER>", "\n".join(html_table), 1
+        )
+
+        table_id = self.identify_table_id(table_inits, "reachable-flows-table")
+        table_inits.append(f'initTable("#{table_id}");')
+        reachable_flows = reachable_flows.replace("<TABLE_ID_PLACEHOLDER>", table_id, 1)
 
         report_content.append(reachable_flows)
-        table_inits.append('initTable("#reachable-flows-table");')
 
     def generate_section_non_reachable_flows(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         non_reachable_flows = NON_REACHABLE_FLOWS
+
+        if piece_id is None:
+            non_reachable_flows = non_reachable_flows.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            non_reachable_flows = non_reachable_flows.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.NON_REACHABLE_FLOWS][self.SUMMARY]
         if tree_is_from_html is False:
@@ -1827,34 +1842,35 @@ class ReportGenerator:
             if self.raw_content:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")]
-                    if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")
+                ] if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
+                )
 
-                current_content = (
-                    row_data[self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")]
-                    if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows") + 1
-                    else "-"
+                current_content = row_data[
+                    self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")
+                ] if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")+1 else "-"
+                current_content = "\n".join(
+                    line.rstrip() for line in current_content.splitlines()
                 )
-                current_content = "\n".join(line.rstrip() for line in current_content.splitlines())
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
+                )
 
-                current_content = (
-                    row_data[self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")]
-                    if len(row_data)
-                    >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")
+                ] if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
+                )
 
                 html_row.append("</tr>")
 
@@ -1863,31 +1879,28 @@ class ReportGenerator:
             else:
                 html_row = ["<tr>"]
 
-                current_content = (
-                    row_data[self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")]
-                    if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary") + 1
-                    else "-"
-                )
+                current_content = row_data[
+                    self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")
+                ] if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Summary")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 html_row.append(f"<td>{current_content}</td>")
 
-                current_content = (
-                    row_data[self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")]
-                    if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows") + 1
-                    else "-"
+                current_content = row_data[
+                    self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")
+                ] if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Flows")+1 else "-"
+                current_content = "\n".join(
+                    line.rstrip() for line in current_content.splitlines()
                 )
-                current_content = "\n".join(line.rstrip() for line in current_content.splitlines())
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
-                html_row.append(f'<td><pre class="breakable">{current_content}</pre></td>')
-
-                current_content = (
-                    row_data[self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")]
-                    if len(row_data)
-                    >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages") + 1
-                    else "-"
+                html_row.append(
+                    f'<td><pre class="breakable">{current_content}</pre></td>'
                 )
+
+                current_content = row_data[
+                    self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")
+                ] if len(row_data) >= self.NON_REACHABLE_FLOWS_DATA_COLUMNS.index("Reachable Packages")+1 else "-"
                 if tree_is_from_html is False:
                     current_content = html.escape(current_content)
                 formatted_content = self.format_as_html_ul(current_content)
@@ -1901,13 +1914,23 @@ class ReportGenerator:
             "<TABLE_PLACEHOLDER>", "\n".join(html_table), 1
         )
 
+        table_id = self.identify_table_id(table_inits, "non-reachable-flows-table")
+        table_inits.append(f'initTable("#{table_id}");')
+        non_reachable_flows = non_reachable_flows.replace("<TABLE_ID_PLACEHOLDER>", table_id, 1)
+
         report_content.append(non_reachable_flows)
-        table_inits.append('initTable("#non-reachable-flows-table");')
 
     def generate_section_secure_design_tips(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         secure_design_tips = SECURE_DESIGN_TIPS
+
+        if piece_id is None:
+            secure_design_tips = secure_design_tips.replace("<SECURE_DESIGN_TIPS>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            secure_design_tips = secure_design_tips.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.SECURE_DESIGN_TIPS][self.SUMMARY]
         if tree_is_from_html is False:
@@ -1927,9 +1950,16 @@ class ReportGenerator:
         report_content.append(secure_design_tips)
 
     def generate_section_malware_alert(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         malware_alert = MALWARE_ALERT
+
+        if piece_id is None:
+            malware_alert = malware_alert.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            malware_alert = malware_alert.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.MALWARE_ALERT][self.SUMMARY]
         if tree_is_from_html is False:
@@ -1949,9 +1979,16 @@ class ReportGenerator:
         report_content.append(malware_alert)
 
     def generate_section_recommendation(
-        self, sections_tree, report_content, table_inits, tree_is_from_html
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
     ):
         recommendation = RECOMMENDATION
+
+        if piece_id is None:
+            recommendation = recommendation.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            recommendation = recommendation.replace("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.RECOMMENDATION][self.SUMMARY]
         if tree_is_from_html is False:
@@ -1970,15 +2007,26 @@ class ReportGenerator:
 
         report_content.append(recommendation)
 
-    def generate_section_info(self, sections_tree, report_content, table_inits, tree_is_from_html):
+    def generate_section_info(
+        self, sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+    ):
         info = INFO
+
+        if piece_id is None:
+            info = info.replace("<PIECE_ID_PLACEHOLDER>", "", 1)
+        else:
+            if tree_is_from_html is False:
+                piece_id = html.escape(piece_id)
+            info = malware_alert.info("<PIECE_ID_PLACEHOLDER>", f"{piece_id} {SEPARATOR} ", 1)
 
         current_content = sections_tree[self.INFO][self.SUMMARY]
         if tree_is_from_html is False:
             current_content = html.escape(current_content)
 
         if self.raw_content:
-            info = info.replace("<SUMMARY_PLACEHOLDER>", f"<pre>{current_content}</pre>", 1)
+            info = info.replace(
+                "<SUMMARY_PLACEHOLDER>", f"<pre>{current_content}</pre>", 1
+            )
         else:
             info = info.replace(
                 "<SUMMARY_PLACEHOLDER>",
@@ -1988,7 +2036,10 @@ class ReportGenerator:
 
         report_content.append(info)
 
-    def generate_html(self, sections_tree, tree_is_from_html, styles=""):
+    def generate_html(self, sections_tree=None, sections_trees=None, tree_is_from_html=False, styles=""):
+        if sections_tree is not None:
+            sections_trees = {None: sections_tree}
+
         main_report = HTML_REPORT
 
         main_report = main_report.replace("<ADDITIONAL_STYLES_PLACEHOLDER>", styles)
@@ -1998,72 +2049,79 @@ class ReportGenerator:
 
         # if a summary is populated it means that the corresponding section was in the original data, so we put it also in the html report
 
-        if sections_tree[self.MALWARE_ALERT][self.SUMMARY] != "":
-            self.generate_section_malware_alert(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+        for piece_id, sections_tree in sections_trees.items():
 
-        if sections_tree[self.RECOMMENDATION][self.SUMMARY] != "":
-            self.generate_section_recommendation(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if sections_tree[self.MALWARE_ALERT][self.SUMMARY] != "":
+                self.generate_section_malware_alert(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if sections_tree[self.INFO][self.SUMMARY] != "":
-            self.generate_section_info(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if sections_tree[self.RECOMMENDATION][self.SUMMARY] != "":
+                self.generate_section_recommendation(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if (
-            sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][self.SUMMARY]
-            != ""
-        ):
-            self.generate_section_prioritized_vulnerabilities(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if sections_tree[self.INFO][self.SUMMARY] != "":
+                self.generate_section_info(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][self.SUMMARY] != "":
-            self.generate_section_proactive_measures(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if (
+                sections_tree[self.PRIORITIZED_VULNERABILITIES][self.TOP_PRIORITY_BOM][
+                    self.SUMMARY
+                ]
+                != ""
+            ):
+                self.generate_section_prioritized_vulnerabilities(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if (
-            sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.DEPENDENCY_SCAN_RESULTS_BOM][
-                self.SUMMARY
-            ]
-            != ""
-        ) or len(
-            sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.DEPENDENCY_SCAN_RESULTS_BOM][
-                self.DATA
-            ]
-        ) > 0:
-            self.generate_section_vulnerability_disclosure_report(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if (
+                sections_tree[self.PROACTIVE_MEASURES][self.TOP_REACHABLE_PACKAGES][
+                    self.SUMMARY
+                ]
+                != ""
+            ):
+                self.generate_section_proactive_measures(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY] != "":
-            self.generate_section_service_endpoints(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if (
+                sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][
+                    self.DEPENDENCY_SCAN_RESULTS_BOM
+                ][self.SUMMARY]
+                != ""
+            ) or len(sections_tree[self.VULNERABILITY_DISCLOSURE_REPORT][self.DEPENDENCY_SCAN_RESULTS_BOM][self.DATA]) > 0:
+                self.generate_section_vulnerability_disclosure_report(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if sections_tree[self.REACHABLE_FLOWS][self.SUMMARY] != "":
-            self.generate_section_reachable_flows(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if sections_tree[self.SERVICE_ENDPOINTS][self.ENDPOINTS][self.SUMMARY] != "":
+                self.generate_section_service_endpoints(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if sections_tree[self.NON_REACHABLE_FLOWS][self.SUMMARY] != "":
-            self.generate_section_non_reachable_flows(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if sections_tree[self.REACHABLE_FLOWS][self.SUMMARY] != "" or len(sections_tree[self.REACHABLE_FLOWS][self.DATA]) > 0:
+                self.generate_section_reachable_flows(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
-        if sections_tree[self.SECURE_DESIGN_TIPS][self.SUMMARY] != "":
-            self.generate_section_secure_design_tips(
-                sections_tree, report_content, table_inits, tree_is_from_html
-            )
+            if sections_tree[self.NON_REACHABLE_FLOWS][self.SUMMARY] != "":
+                self.generate_section_non_reachable_flows(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
+
+            if sections_tree[self.SECURE_DESIGN_TIPS][self.SUMMARY] != "":
+                self.generate_section_secure_design_tips(
+                    sections_tree, report_content, table_inits, tree_is_from_html, piece_id
+                )
 
         main_report = main_report.replace(
             "<CONTENT_PLACEHOLDER>", "\n<p>&nbsp;</p>".join(report_content), 1
         )
-        main_report = main_report.replace("<INIT_TABLE_PLACEHOLDER>", "\n".join(table_inits), 1)
+        main_report = main_report.replace(
+            "<INIT_TABLE_PLACEHOLDER>", "\n".join(table_inits), 1
+        )
 
         with open(self.report_output_path, "w", encoding="utf-8") as f:
             f.write(main_report)
@@ -2079,8 +2137,14 @@ class ReportGenerator:
 
         if self.input_rich_html_path is not None:
             depscan_report, styles = self.extract_depscan_report_from_rich_html()
-            sections_tree = self.parse_depscan_report(depscan_report)
-            self.generate_html(sections_tree=sections_tree, tree_is_from_html=True, styles=styles)
+            report_pieces = self.separate_report_by_language_explanations(depscan_report)
+            sections_trees = {}
+            for piece_id, report_piece in report_pieces.items():
+                sections_tree = self.parse_depscan_report(report_piece)
+                sections_trees[piece_id] = sections_tree
+            self.generate_html(
+                sections_trees=sections_trees, tree_is_from_html=True, styles=styles
+            )
             return
 
         if self.input_txt_path is not None:
